@@ -60,7 +60,23 @@ Entry matching: singletons by content type; collection entries by their natural 
 
 Out of scope: media uploads (binary files), workspace provisioning. Media must be re-uploaded separately.
 
+Env vars:
+- `SOURCE_WORKSPACE` / `TARGET_WORKSPACE` — workspace slugs (independent on each side). Falls back to `WORKSPACE` if you want the same on both.
+- `LOCALE` — defaults to `sv-SE`. Critical — list endpoints default-filter to `?locale=en`, so the wrong locale means "0 entries found" silently.
+
 Flags:
 - `DRY_RUN=true` — log all actions, no writes
 - `ONLY=home-page,banner` — restrict to specific content-type slugs
 - `SKIP_LOCALES=true` — don't touch `/api/locales`
+
+## Caveat — verify migrations with a cache flush
+
+The CMS Redis cache for list endpoints has no write-through invalidation, so a `GET /api/<ct>/entries?...` immediately after the migrate may return the pre-migration view for a while. The migrate itself uses per-call cache-busting (`_t=<now>` on every request) so the migration logic is correct — but if you're querying with a different client to verify, you'll see stale data.
+
+Either query with a unique query-param every time, or flush:
+
+```bash
+docker exec main-redis-1 redis-cli FLUSHALL
+```
+
+Tracked in `frontend-suite/shared/memory/reference_debt.md` under CMS-side debt.

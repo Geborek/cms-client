@@ -46,6 +46,7 @@ const env = (k: string): string => {
 const DRY_RUN = process.env.DRY_RUN === 'true';
 const ONLY = process.env.ONLY?.split(',').map((s) => s.trim()).filter(Boolean);
 const SKIP_LOCALES = process.env.SKIP_LOCALES === 'true';
+const LOCALE = process.env.LOCALE ?? 'sv-SE';
 
 interface Locale {
   code: string;
@@ -236,6 +237,8 @@ async function migrateFields(src: CmsClient, tgt: CmsClient, ct: ContentType): P
 
   for (const field of srcFields) {
     const payload = stripServerFields(field as unknown as Record<string, unknown>);
+    // Some legacy fields carry label: "" which POST tolerated but PATCH rejects.
+    if (!payload.label || payload.label === '') payload.label = field.name;
     const existing = tgtByName.get(field.name);
     if (existing) {
       const path = `/api/content-types/${ct.slug}/fields/${existing.id}`;
@@ -251,10 +254,11 @@ async function migrateFields(src: CmsClient, tgt: CmsClient, ct: ContentType): P
 }
 
 async function migrateEntries(src: CmsClient, tgt: CmsClient, ct: ContentType): Promise<void> {
-  // Cache-bust per the known list-cache bug.
-  const bust = `?populate=_&_t=${Date.now()}`;
-  const srcEntries = (await src.get<Entry[]>(`/api/${ct.slug}/entries${bust}`)) ?? [];
-  const tgtEntries = (await tgt.get<Entry[]>(`/api/${ct.slug}/entries${bust}`)) ?? [];
+  // Cache-bust per the known list-cache bug. Locale filter is critical — list
+  // endpoints default to ?locale=en, so omitting it returns 0 for sv-SE content.
+  const qs = `?locale=${encodeURIComponent(LOCALE)}&limit=200&_t=${Date.now()}`;
+  const srcEntries = (await src.get<Entry[]>(`/api/${ct.slug}/entries${qs}`)) ?? [];
+  const tgtEntries = (await tgt.get<Entry[]>(`/api/${ct.slug}/entries${qs}`)) ?? [];
 
   if (ct.singleton) {
     if (srcEntries.length === 0) {
@@ -314,7 +318,13 @@ async function migrateEntries(src: CmsClient, tgt: CmsClient, ct: ContentType): 
 }
 
 async function main() {
-  const workspace = env('WORKSPACE');
+  const workspace = process.env.WORKSPACE;
+  const sourceWorkspace = process.env.SOURCE_WORKSPACE ?? workspace;
+  const targetWorkspace = process.env.TARGET_WORKSPACE ?? workspace;
+  if (!sourceWorkspace || !targetWorkspace) {
+    console.error('[migrate] WORKSPACE (or SOURCE_WORKSPACE + TARGET_WORKSPACE) required');
+    process.exit(1);
+  }
   const sourceUrl = env('SOURCE_CMS_URL');
   const targetUrl = env('TARGET_CMS_URL');
   const sourceUser = env('SOURCE_CMS_USERNAME');
@@ -322,9 +332,9 @@ async function main() {
   const targetUser = env('TARGET_CMS_USERNAME');
   const targetPass = env('TARGET_CMS_PASSWORD');
 
-  console.log(`[migrate] workspace: ${workspace}`);
-  console.log(`[migrate] source:    ${sourceUrl}`);
-  console.log(`[migrate] target:    ${targetUrl}`);
+  console.log(`[migrate] source:    ${sourceUrl}  (workspace: ${sourceWorkspace})`);
+  console.log(`[migrate] target:    ${targetUrl}  (workspace: ${targetWorkspace})`);
+  console.log(`[migrate] locale:    ${LOCALE}`);
   if (DRY_RUN) console.log(`[migrate] DRY RUN — no writes will happen`);
   if (ONLY) console.log(`[migrate] ONLY:      ${ONLY.join(', ')}`);
   console.log();
@@ -332,8 +342,8 @@ async function main() {
   const sourceToken = await loginAsAdmin('source', sourceUrl, sourceUser, sourcePass);
   const targetToken = await loginAsAdmin('target', targetUrl, targetUser, targetPass);
 
-  const src = new CmsClient('source', sourceUrl, sourceToken, workspace);
-  const tgt = new CmsClient('target', targetUrl, targetToken, workspace);
+  const src = new CmsClient('source', sourceUrl, sourceToken, sourceWorkspace);
+  const tgt = new CmsClient('target', targetUrl, targetToken, targetWorkspace);
 
   await migrateLocales(src, tgt);
 
